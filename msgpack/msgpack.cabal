@@ -1,6 +1,6 @@
 cabal-version:      1.12
 name:               msgpack
-version:            1.1.0.0
+version:            1.0.1.0
 
 synopsis:           A Haskell implementation of MessagePack
 description:
