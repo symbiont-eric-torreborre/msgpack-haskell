@@ -21,6 +21,9 @@ module Data.MessagePack.Object (
   -- * MessagePack Object
   Object(..),
 
+  -- * MessagePack conveniences
+  (.:), (.=),
+
   -- * MessagePack Serializable Types
   MessagePack(..), typeMismatch, Result(..)
   ) where
@@ -91,6 +94,14 @@ data Object
     --
     -- __NOTE__: MessagePack is limited to maximum extension data size of up to \( 2^{32}-1 \) bytes.
   deriving (Show, Read, Eq, Ord, Typeable, Generic)
+
+(.:) :: MessagePack a => [(Object, Object)] -> T.Text -> Result a
+m .: key = case lookup (ObjectStr key) m of
+  Just a  -> fromObject a
+  Nothing -> Error $ "missing key " <> T.unpack key
+
+(.=) :: MessagePack a => T.Text -> a -> (Object, Object)
+k .= a = (ObjectStr k, toObject a)
 
 instance NFData Object where
   rnf obj = case obj of
