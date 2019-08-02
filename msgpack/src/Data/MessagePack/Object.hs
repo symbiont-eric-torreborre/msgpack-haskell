@@ -41,8 +41,10 @@ import qualified Data.IntMap.Strict            as IntMap
 import           Data.List.NonEmpty            (NonEmpty)
 import qualified Data.List.NonEmpty            as NEL
 import qualified Data.Map                      as Map
+import           Data.Monoid
 import qualified Data.Text                     as T
 import qualified Data.Text.Lazy                as LT
+import           Data.Typeable
 import qualified Data.Vector                   as V
 
 import           Data.MessagePack.Assoc
@@ -95,10 +97,14 @@ data Object
     -- __NOTE__: MessagePack is limited to maximum extension data size of up to \( 2^{32}-1 \) bytes.
   deriving (Show, Read, Eq, Ord, Typeable, Generic)
 
-(.:) :: MessagePack a => [(Object, Object)] -> T.Text -> Result a
-m .: key = case lookup (ObjectStr key) m of
-  Just a  -> fromObject a
-  Nothing -> Error $ "missing key " <> T.unpack key
+(.:) :: MessagePack a => Object -> T.Text -> Result a
+(ObjectMap m) .: key =
+  let finder ((ObjectStr k), _) | k == key = True
+      finder _ = False
+  in case V.find finder m of
+    Just (_, a)  -> fromObject a
+    _ -> Error $ "missing key " <> T.unpack key
+m .: _ = Error $ "expected Objectmap got " <> (show . typeOf $ m)
 
 (.=) :: MessagePack a => T.Text -> a -> (Object, Object)
 k .= a = (ObjectStr k, toObject a)
