@@ -30,6 +30,7 @@ import           Data.MessagePack     as MP
 import           Data.Scientific
 import qualified Data.Text.Encoding   as T
 import qualified Data.Vector          as V
+import qualified Data.List            as L
 
 -- | Convert 'MP.Object' to JSON 'Value'
 toAeson :: MP.Object -> A.Result Value
@@ -59,7 +60,7 @@ fromAeson = \case
       Right n -> ObjectInt n
   String t    -> ObjectStr t
   Array v     -> ObjectArray $ V.map fromAeson v
-  A.Object o  -> ObjectMap $ V.fromList $ map (toObject *** fromAeson) $ HM.toList o
+  A.Object o  -> ObjectMap $ V.fromList $ map (toObject *** fromAeson) $ L.sortOn fst $ HM.toList o
 
 -- Helpers to piggyback off a JSON encoder / decoder when creating a MessagePack
 -- instance.
