@@ -2,12 +2,13 @@
 {-# LANGUAGE DeriveFunctor              #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE LambdaCase                 #-}
+{-# LANGUAGE ViewPatterns               #-}
 
 -- | Aeson bridge for MessagePack
 module Data.MessagePack.Aeson (
   -- * Conversion functions
   toAeson, fromAeson,
-  viaToJSON, viaFromJSON,
+  unsafeViaToJSON, viaFromJSON,
 
   -- * Wrapper instances
   AsMessagePack(..),
@@ -21,15 +22,19 @@ module Data.MessagePack.Aeson (
 import           Control.Applicative
 import           Control.Arrow
 import           Control.DeepSeq
-import           Data.Aeson           as A
-import qualified Data.ByteString.Lazy as L (ByteString)
+import           Data.Aeson               as A
+import qualified Data.ByteString.Lazy     as L (ByteString)
 import           Data.Data
-import qualified Data.HashMap.Strict  as HM
+import qualified Data.HashMap.Strict      as HM
+import           Data.Int
 import           Data.Maybe
-import           Data.MessagePack     as MP
+import           Data.MessagePack         as MP
+import           Data.MessagePack.Integer
 import           Data.Scientific
-import qualified Data.Text.Encoding   as T
-import qualified Data.Vector          as V
+import           Data.Traversable         (traverse)
+import qualified Data.Text.Encoding       as T
+import qualified Data.Vector              as V
+import           Data.Word
 
 -- | Convert 'MP.Object' to JSON 'Value'
 toAeson :: MP.Object -> A.Result Value
@@ -49,17 +54,22 @@ toAeson = \case
   ObjectExt _ _  -> fail "ObjectExt is not supported"
 
 -- | Convert JSON 'Value' to 'MP.Object'
-fromAeson :: Value -> MP.Object
+fromAeson :: Value -> MP.Result MP.Object
 fromAeson = \case
-  Null        -> ObjectNil
-  Bool b      -> ObjectBool b
+  Null        -> MP.Success ObjectNil
+  Bool b      -> MP.Success $ ObjectBool b
   Number s ->
+    -- NOTE floatingOrInteger can OOM on untrusted input
     case floatingOrInteger s of
-      Left f  -> ObjectDouble f
-      Right n -> ObjectInt n
-  String t    -> ObjectStr t
-  Array v     -> ObjectArray $ V.map fromAeson v
-  A.Object o  -> ObjectMap $ V.fromList $ map (toObject *** fromAeson) $ HM.toList o
+      Left n                            -> MP.Success $ ObjectDouble n
+      Right (fromIntegerTry -> Right n) -> MP.Success $ ObjectInt n
+      Right _                           -> MP.Error "number out of bounds"
+  String t    -> MP.Success $ ObjectStr t
+  Array v     -> ObjectArray <$> traverse fromAeson v
+  A.Object o  -> (ObjectMap . V.fromList) <$> traverse fromEntry (HM.toList o)
+    where
+      -- fromEntry :: (Text, Value) -> MP.Result (MP.Object, MP.Object)
+      fromEntry (k, v) = (\a -> (ObjectStr k, a)) <$> fromAeson v
 
 -- Helpers to piggyback off a JSON encoder / decoder when creating a MessagePack
 -- instance.
@@ -70,8 +80,11 @@ viaFromJSON o = case toAeson o >>= fromJSON of
   A.Success a -> MP.Success a
   A.Error   e -> MP.Error e
 
-viaToJSON :: ToJSON a => a -> MP.Object
-viaToJSON = fromAeson . toJSON
+-- WARNING: not total for JSON numbers outside the 64 bit range
+unsafeViaToJSON :: ToJSON a => a -> MP.Object
+unsafeViaToJSON a = case fromAeson $ toJSON a of
+  MP.Error e   -> error e
+  MP.Success a -> a
 
 -- | Wrapper for using Aeson values as MessagePack value.
 newtype AsMessagePack a = AsMessagePack { getAsMessagePack :: a }
@@ -79,7 +92,7 @@ newtype AsMessagePack a = AsMessagePack { getAsMessagePack :: a }
 
 instance (FromJSON a, ToJSON a) => MessagePack (AsMessagePack a) where
   fromObject o = AsMessagePack <$> (aResult fail pure (fromJSON =<< toAeson o))
-  toObject = fromAeson . toJSON . getAsMessagePack
+  toObject = unsafeViaToJSON . getAsMessagePack
 
 -- | Wrapper for using MessagePack values as Aeson value.
 newtype AsAeson a = AsAeson { getAsAeson :: a }
@@ -89,11 +102,13 @@ instance MessagePack a => ToJSON (AsAeson a) where
   toJSON = aResult (const Null) id . toAeson . toObject . getAsAeson
 
 instance MessagePack a => FromJSON (AsAeson a) where
-  parseJSON = mpResult fail (pure . AsAeson) . fromObject . fromAeson
+  parseJSON j = case fromAeson j of
+    MP.Error e   -> fail e
+    MP.Success a -> mpResult fail (pure . AsAeson) $ fromObject a
 
 -- | Encode to MessagePack via "Data.Aeson"'s 'ToJSON' instances
-packAeson :: ToJSON a => a -> L.ByteString
-packAeson = pack . fromAeson . toJSON
+packAeson :: ToJSON a => a -> MP.Result L.ByteString
+packAeson a = pack <$> (fromAeson $ toJSON a)
 
 -- | Decode from MessagePack via "Data.Aeson"'s 'FromJSON' instances
 unpackAeson :: FromJSON a => L.ByteString -> A.Result a
